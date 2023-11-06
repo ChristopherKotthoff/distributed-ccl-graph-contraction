@@ -1,3 +1,4 @@
+#define _GLIBCXX_DEBUG
 #include <vector>
 #include <iostream>
 #include <mpi.h>
@@ -9,12 +10,14 @@
 class Graph
 {
 private:
-    std::vector<std::vector<int>> adjList;
 
 public:
     int startVertexIndex;
     int vertexCount;
+    std::vector<std::vector<int>> adjList;
 
+    /*default constructor*/
+    Graph() : startVertexIndex(0), vertexCount(0) {}
     /*complete graph*/
     Graph(int vertexCount) : startVertexIndex(0), vertexCount(vertexCount), adjList(vertexCount) {}
     /*subgraph*/
@@ -70,13 +73,13 @@ public:
         }
     }
 
-    /*vertices contain vertex ids (absolute)*/
-    void sendSubgraph(int dest, int startID, int endID, MPI_Comm comm)
+    /*vertices contain vertex ids (absolute). "from" and "to" are the ids of the specified range of vertices (including "to").*/
+    void sendSubgraph(int dest, int from, int to, MPI_Comm comm)
     {
         // Calculate the size of the buffer
         int bufferSize = sizeof(int);                      // For storing the size of the vertices vector
-        bufferSize += sizeof(int) * (endID - startID + 1); // For storing the vertices
-        for (int v = startID; v <= endID; ++v)
+        bufferSize += sizeof(int) * (to - from + 1); // For storing the vertices
+        for (int v = from; v <= to; ++v)
         {
             if (v < startVertexIndex || v >= startVertexIndex + vertexCount)
             {
@@ -91,10 +94,10 @@ public:
         int position = 0;
 
         // Pack the data into the buffer
-        int size = endID - startID + 1;
+        int size = to - from + 1;
         MPI_Pack(&size, 1, MPI_INT, buffer, bufferSize, &position, comm);
-        MPI_Pack(&startID, 1, MPI_INT, buffer, bufferSize, &position, comm);
-        for (int v = startID; v <= endID; ++v)
+        MPI_Pack(&from, 1, MPI_INT, buffer, bufferSize, &position, comm);
+        for (int v = from; v <= to; ++v)
         {
             size = this->operator[](v).size();
             MPI_Pack(&size, 1, MPI_INT, buffer, bufferSize, &position, comm);
@@ -141,6 +144,55 @@ public:
         delete[] buffer;
         return subgraph;
     }
+
+    /*creates a subgraph. "from" and "to" are the ids of the specified range of vertices (including "to").*/
+    Graph createSubgraph(int from, int to) {
+        if (from < startVertexIndex || to >= startVertexIndex + vertexCount || from > to) {
+            throw std::out_of_range("Invalid range for subgraph creation");
+        }
+
+        int subgraphVertexCount = to - from + 1;
+        Graph subgraph(subgraphVertexCount, from);
+
+        // Adjust the indices for the new subgraph
+        for (int i = from; i <= to; ++i) {
+            for (int neighbor : this->operator[](i)) {
+                // Include only the edges where the neighbor is within the new subgraph's range
+                if (neighbor >= from && neighbor <= to) {
+                    subgraph[i].push_back(neighbor);
+                }
+            }
+        }
+
+        return subgraph;
+    }
+
+    void DFS(int v, std::vector<bool> &visited, int label, std::vector<int> &components) {
+        visited[v-startVertexIndex] = true;
+        components[v-startVertexIndex] = label;
+
+        // Recur for all the vertices adjacent to this vertex
+        for (int i : (this->operator[](v))) {
+            if (i >= startVertexIndex && i < startVertexIndex+vertexCount && !visited[i-startVertexIndex]) {
+                DFS(i, visited, label, components);
+            }
+        }
+    }
+
+    std::vector<int> connectedComponents() {
+        std::vector<bool> visited(vertexCount, false);
+        std::vector<int> components(vertexCount, -1); // -1 means unvisited
+        int label = startVertexIndex;
+
+        for (int v = startVertexIndex; v < startVertexIndex+vertexCount; ++v) {
+            if (!visited[v-startVertexIndex]) {
+                DFS(v, visited, label, components);
+                label++; // Increment label for next component
+            }
+        }
+        return components;
+    }
+
 };
 
 int main()
@@ -157,6 +209,8 @@ int main()
     int mpi_size;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+
+    Graph g_sub;
 
     if (mpi_rank == 0)
     {
@@ -294,16 +348,39 @@ int main()
             g.addEdge(135, 136);
             g.addEdge(136, 137);
         }
-        g.sendSubgraph(1, 8, 32, MPI_COMM_WORLD);
-        Graph g_sub = Graph::receiveSubgraph(1, MPI_COMM_WORLD);
-        g_sub.print();
+        
+        int verticesPerProcess = g.vertexCount / mpi_size;
+        if (verticesPerProcess == 0)
+        {
+            throw std::runtime_error("Too many processes");
+        }
+
+        for (int receiver = 1; receiver < mpi_size-1; ++receiver)
+        {
+            g.sendSubgraph(receiver, verticesPerProcess*receiver, verticesPerProcess*(receiver+1)-1, MPI_COMM_WORLD);
+        }
+        g.sendSubgraph(mpi_size-1, verticesPerProcess*(mpi_size-1), g.vertexCount-1, MPI_COMM_WORLD);
+
+        
+        g_sub = g.createSubgraph(0, verticesPerProcess-1);
     }
-    else if (mpi_rank == 1)
+    else
     {
-        Graph g = Graph::receiveSubgraph(0, MPI_COMM_WORLD);
-        g.print();
-        g.sendSubgraph(0, 10, 30, MPI_COMM_WORLD);
+        g_sub = Graph::receiveSubgraph(0, MPI_COMM_WORLD);
     }
+    
+    sleep(mpi_rank);
+    std::vector<int> labels = g_sub.connectedComponents();
+    for (int i = 0; i < g_sub.vertexCount; ++i)
+        {
+            std::cout << i + g_sub.startVertexIndex << ": ";
+            for (int w : g_sub.adjList[i])
+            {
+                std::cout << w << " ";
+            }
+            std::cout << "and has label: " << labels[i]<< std::endl;
+        }
+    std::cout << std::endl;
 
     MPI_Finalize();
     return 0;
