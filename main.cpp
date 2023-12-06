@@ -5,16 +5,265 @@
 #include <algorithm>
 #include <unistd.h>
 #include <cassert>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+
+#define DEBUG_CONDITION true
 
 /// @brief
+
+class CAG {
+    public: 
+    struct Node {
+        int id;
+        bool isForeign;
+        std::unordered_set<int> neighbors; // Using unordered_set to avoid duplicates
+        Node() : id(-1), isForeign(false) {} // Default constructor
+        Node(int _id, bool _isForeign) : id(_id), isForeign(_isForeign) {}
+    };
+
+    std::unordered_map<int, Node> nodes;
+
+    // Method to serialize the nodes into a vector
+    std::vector<int> serialize() const {
+        std::vector<int> data;
+
+        // Serialize each node
+        for (const auto& nodePair : nodes) {
+            const Node& node = nodePair.second;
+
+            // Serialize node ID
+            data.push_back(node.id);
+
+            // Serialize isForeign (as 0 or 1)
+            data.push_back(node.isForeign ? 1 : 0);
+
+            // Serialize the number of neighbors
+            data.push_back(node.neighbors.size());
+
+            // Serialize each neighbor
+            for (int neighborId : node.neighbors) {
+                data.push_back(neighborId);
+            }
+        }
+
+        // Add a special marker at the end (e.g., -1) to indicate the end of data
+        data.push_back(-1);
+
+        return data;
+    }
+
+    void deserialize(const std::vector<int>& data) {
+        // Clear existing data
+        nodes.clear();
+
+        size_t i = 0;
+        while (i < data.size() && data[i] != -1) {
+            // Deserialize node ID
+            int nodeId = data[i++];
+
+            // Deserialize isForeign
+            bool isForeign = data[i++] == 1;
+
+            // Deserialize the number of neighbors
+            int numNeighbors = data[i++];
+
+            // Add node
+            addNode(nodeId, isForeign);
+
+            // Deserialize and add each neighbor
+            for (int j = 0; j < numNeighbors; ++j) {
+                int neighborId = data[i++];
+                addEdge(nodeId, neighborId);
+            }
+        }
+    }
+
+    // Add a new node to the graph
+    void addNode(int id) {
+        if (nodes.find(id) == nodes.end()) {
+            nodes[id] = Node{id, false};
+        }
+    }
+
+    void addNode(int id, bool isForeign) {
+        if (nodes.find(id) == nodes.end()) {
+            nodes[id] = Node{id, isForeign};
+        }else{
+            if (nodes[id].isForeign != isForeign){
+                throw std::runtime_error("Node already exists with different isForeign value");
+            }
+        }
+    }
+
+    // Add an edge between two nodes
+    void addEdge(int from, int to) {
+        // Check if 'from' node exists, if not, add it
+        if (nodes.find(from) == nodes.end()) {
+            addNode(from);
+        }
+
+        // Check if 'to' node exists, if not, add it
+        if (nodes.find(to) == nodes.end()) {
+            addNode(to);
+        }
+
+        // Now add the edge since both nodes exist
+        nodes[from].neighbors.insert(to);
+        nodes[to].neighbors.insert(from);
+    }
+
+    void addEdgeLocalToForeign(int from, int to) {
+        // Check if 'from' node exists, if not, add it
+        if (nodes.find(from) == nodes.end()) {
+            addNode(from);
+        }
+
+        // Check if 'to' node exists, if not, add it
+        if (nodes.find(to) == nodes.end()) {
+            addNode(to);
+        }
+
+        // Now add the edge since both nodes exist
+        nodes[from].neighbors.insert(to);
+        nodes[to].neighbors.insert(from);
+    }
+
+    bool doesNodeExist(int id) const {
+        return nodes.find(id) != nodes.end();
+    }
+
+    bool isNodeForeign(int id) const {
+        if (nodes.find(id) == nodes.end()) {
+            throw std::runtime_error("Node does not exist");
+        }else{
+            return nodes.at(id).isForeign;
+        }
+    }
+
+    // Make a node local
+    void makeNodeLocal(int id){
+        if (nodes.find(id) == nodes.end()) {
+            throw std::runtime_error("Node does not exist");
+        }else{
+            nodes[id].isForeign = false;
+        }
+    }
+
+    // Remove an edge between two nodes
+    void removeEdge(int from, int to) {
+        nodes[from].neighbors.erase(to);
+        nodes[to].neighbors.erase(from);
+    }
+
+    // Contract an edge between two nodes
+    void contractEdge(int u, int v) {
+        if (nodes.find(u) != nodes.end() && nodes.find(v) != nodes.end()) {
+            // Merge v's neighbors into u
+            for (auto neighbor : nodes[v].neighbors) {
+                if (neighbor != u) { // Avoid self-loop
+                    nodes[u].neighbors.insert(neighbor);
+                    nodes[neighbor].neighbors.erase(v);
+                    nodes[neighbor].neighbors.insert(u);
+                }
+            }
+
+            // Remove v from the graph
+            nodes.erase(v);
+        }
+    }
+
+    void contractLocalToLocalEdges() {
+        std::vector<std::pair<int, int>> edgesToContract;
+
+        // Step 1: Collect edges to contract
+        for (const auto& nodePair : nodes) {
+            if (nodePair.second.isForeign) {
+                continue;
+            }
+            int u = nodePair.first;
+            for (int v : nodePair.second.neighbors) {
+                if (u < v && !nodes[v].isForeign){ // Ensure each edge is only considered once
+                    edgesToContract.emplace_back(u, v);
+                }
+            }
+        }
+
+        // Step 2: Contract edges
+        for (const auto& edge : edgesToContract) {
+            contractEdge(edge.first, edge.second);
+        }
+    }
+
+    // Optional: Method to display the graph (for debugging or visualization purposes)
+    void displayGraph() const {
+        for (const auto& pair : nodes) {
+            std::cout << "Node " << pair.first << ": ";
+            for (int neighbor : pair.second.neighbors) {
+                std::cout << neighbor << " ";
+            }
+            std::cout << std::endl;
+        }
+    }
+
+    CAG sendAndReceive(int partner_rank) {
+        // Serialize the current CAG instance
+        std::vector<int> serializedData = serialize();
+
+        // Determine the size of the serialized data
+        int dataSize = serializedData.size();
+
+        // Exchange the size information
+        int partnerDataSize;
+        MPI_Sendrecv(&dataSize, 1, MPI_INT, partner_rank, 0,
+                     &partnerDataSize, 1, MPI_INT, partner_rank, 0,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        // Allocate space for the partner's data
+        std::vector<int> partnerData(partnerDataSize);
+
+        // Exchange the serialized data
+        MPI_Sendrecv(serializedData.data(), dataSize, MPI_INT, partner_rank, 0,
+                     partnerData.data(), partnerDataSize, MPI_INT, partner_rank, 0,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        // Deserialize the received data into a new CAG instance
+        CAG newCAG;
+        newCAG.deserialize(partnerData);
+        return newCAG;
+    }
+
+};
+
 class Graph
 {
 private:
+    void DFS(int v, std::vector<bool> &visited, int label, std::vector<int> &components) {
+        visited[v-startVertexIndex] = true;
+        components[v-startVertexIndex] = label;
+
+        // Recur for all the vertices adjacent to this vertex
+        for (int i : (this->operator[](v))) {
+            if (i >= startVertexIndex && i < startVertexIndex+vertexCount && !visited[i-startVertexIndex]) {
+                DFS(i, visited, label, components);
+            }else if(i < startVertexIndex || i >= startVertexIndex+vertexCount){
+                foreign_to_local_edges[i].push_back(v);
+                local_to_foreign_nodes[v].push_back(i);
+            }
+        }
+    }
+
+    //std::vector<std::vector<int>> adjList;
 
 public:
     int startVertexIndex;
     int vertexCount;
     std::vector<std::vector<int>> adjList;
+    std::unordered_map<int, std::vector<int>> foreign_to_local_edges;
+    std::unordered_map<int, std::vector<int>> local_to_foreign_nodes;
+
+
 
     /*default constructor*/
     Graph() : startVertexIndex(0), vertexCount(0) {}
@@ -57,6 +306,12 @@ public:
     {
         this->operator[](v).push_back(w);
         this->operator[](w).push_back(v);
+    }
+
+    /*absolute positions*/
+    void addDirectedEdge(int v, int w)
+    {
+        this->operator[](v).push_back(w);
     }
 
     /*prints the current graph*/
@@ -158,27 +413,14 @@ public:
         for (int i = from; i <= to; ++i) {
             for (int neighbor : this->operator[](i)) {
                 // Include only the edges where the neighbor is within the new subgraph's range
-                if (neighbor >= from && neighbor <= to) {
-                    subgraph[i].push_back(neighbor);
-                }
+                subgraph[i].push_back(neighbor);
             }
         }
 
         return subgraph;
     }
 
-    void DFS(int v, std::vector<bool> &visited, int label, std::vector<int> &components) {
-        visited[v-startVertexIndex] = true;
-        components[v-startVertexIndex] = label;
-
-        // Recur for all the vertices adjacent to this vertex
-        for (int i : (this->operator[](v))) {
-            if (i >= startVertexIndex && i < startVertexIndex+vertexCount && !visited[i-startVertexIndex]) {
-                DFS(i, visited, label, components);
-            }
-        }
-    }
-
+    /*returns a vector containing the labels of vertices in the graph. ret[i-startVertexIndex] is label of vertex with id i*/
     std::vector<int> connectedComponents() {
         std::vector<bool> visited(vertexCount, false);
         std::vector<int> components(vertexCount, -1); // -1 means unvisited
@@ -193,10 +435,24 @@ public:
         return components;
     }
 
+    CAG createCAG(std::vector<int>& connectedComponents, std::unordered_map<int, int>& foreign_ID_to_label){
+        CAG cag;
+        for (int i = startVertexIndex; i < startVertexIndex+vertexCount; ++i){
+            for (int j : (this->operator[](i))){
+                // vertex i is connected to vertex j
+                if (j < startVertexIndex || j >= startVertexIndex+vertexCount){ // j is a foreign node
+                    cag.addEdgeLocalToForeign(connectedComponents[i-startVertexIndex], foreign_ID_to_label[j]);
+                }
+            }
+        }
+        return cag;
+    }
+
 };
 
-int main()
-{
+
+int main(int argc, char** argv) {
+    MPI_Init(&argc, &argv);
 
     int xx = 1;
     while (xx == 0)
@@ -204,7 +460,6 @@ int main()
         sleep(5);
     }
 
-    MPI_Init(nullptr, nullptr);
     int mpi_rank;
     int mpi_size;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
@@ -371,16 +626,126 @@ int main()
     
     sleep(mpi_rank);
     std::vector<int> labels = g_sub.connectedComponents();
-    for (int i = 0; i < g_sub.vertexCount; ++i)
-        {
-            std::cout << i + g_sub.startVertexIndex << ": ";
-            for (int w : g_sub.adjList[i])
-            {
-                std::cout << w << " ";
-            }
-            std::cout << "and has label: " << labels[i]<< std::endl;
-        }
+
+    std::vector<int> local_list; // contains the following information: [localnode, cc_id, localnode, cc_id, ...]
+    for (const auto& node : g_sub.local_to_foreign_nodes) {
+        local_list.push_back(node.first);
+        local_list.push_back(labels[node.first-g_sub.startVertexIndex]);
+    }
+    if (mpi_rank == 0){
+        for (int i = 0; i < local_list.size(); ++i) {
+        std::cout << local_list[i] << " ";}
+        std::cout << std::endl;
+    }
+
+    //exchange borders with all other processes
+    // Step 1: Gather sizes of each list
+    std::vector<int> list_sizes(mpi_size);
+    int local_list_size = local_list.size();
+    MPI_Allgather(&local_list_size, 1, MPI_INT, list_sizes.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    // Step 2: Compute displacements
+    std::vector<int> displacements(mpi_size);
+    int total_size = 0;
+    for (int i = 0; i < mpi_size; ++i) {
+        displacements[i] = total_size;
+        total_size += list_sizes[i];
+    }
+
+    // Prepare a vector to receive the gathered data
+    std::vector<int> gathered_list(total_size);
+
+    // Step 3: Gather the lists
+    MPI_Allgatherv(local_list.data(), local_list_size, MPI_INT,
+                   gathered_list.data(), list_sizes.data(), displacements.data(),
+                   MPI_INT, MPI_COMM_WORLD);
+
+
+    std::unordered_map<int, int> foreign_ID_to_label;
+    for (int i = 0; i < total_size; i += 2) {
+        foreign_ID_to_label[gathered_list[i]] = gathered_list[i + 1];
+    }
+
+    CAG cag = g_sub.createCAG(labels, foreign_ID_to_label);
+
+
+    if (mpi_rank == 0){
+        for (int i = 0; i < gathered_list.size(); ++i) {
+        std::cout << gathered_list[i] << " ";
+    }
+
     std::cout << std::endl;
+    }
+
+
+
+    // calculating reduction tree
+    int partners_size = (int)(log(mpi_size) / log(2.0));
+    assert((int)pow(2, partners_size) == mpi_size && "mpi_size must be power of 2 for the reduction tree (temporarily)");
+    std::vector<int> partners(partners_size);
+
+    {
+        int nxt_distance = 1;
+        int index = 0;
+        while (nxt_distance < mpi_size) {
+        int temp = int((mpi_rank) / nxt_distance);
+        int skip = 0;
+
+        if (temp % 2 == 1)
+            skip = -nxt_distance;
+        else
+            skip = nxt_distance;
+
+        partners[index++] = mpi_rank + skip;
+
+        nxt_distance *= 2;
+        }
+    }
+
+    // exchange and create
+    for (int i = 0; i < partners_size; ++i) {
+        CAG received_cag = cag.sendAndReceive(partners[i]);
+
+        // merge received_cag into cag
+        for (const auto& nodePair : received_cag.nodes) {
+            const CAG::Node& new_cag_node = nodePair.second;
+
+            // Add node
+            if (cag.doesNodeExist(new_cag_node.id)) {
+                // node did not exist in previous cag
+                cag.addNode(new_cag_node.id, new_cag_node.isForeign);
+            }else{
+                // node already existed in previous cag
+                if (cag.isNodeForeign(new_cag_node.id)){
+                    // node was foreign in previous cag
+                    if (!new_cag_node.isForeign){
+                        // node is now local in current cag
+                        cag.makeNodeLocal(new_cag_node.id);
+                    }else{
+                        // node is still foreign in current cag
+                    }
+                }else{
+                    // node was local in previous cag
+                    if (!new_cag_node.isForeign){
+                        // something went wrong
+                        throw std::runtime_error("Node already exists with different isForeign value");
+                    }else{
+                        // do nothing
+                    }
+                }
+            }
+        }
+
+        // merge all local-local edges in the CAG of the variable cag
+        cag.contractLocalToLocalEdges();
+
+    }
+
+
+    cag.displayGraph();
+
+
+
 
     MPI_Finalize();
     return 0;
