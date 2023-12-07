@@ -24,6 +24,8 @@ class CAG {
     };
 
     std::unordered_map<int, Node> nodes;
+    std::unordered_map<int, int> union_find;
+    std::unordered_set<int> values_in_union_find;
 
     // Method to serialize the nodes into a vector
     std::vector<int> serialize() const {
@@ -92,7 +94,7 @@ class CAG {
             nodes[id] = Node{id, isForeign};
         }else{
             if (nodes[id].isForeign != isForeign){
-                throw std::runtime_error("Node already exists with different isForeign value");
+                throw std::runtime_error("Node already exists with different isForeign value.");
             }
         }
     }
@@ -122,7 +124,11 @@ class CAG {
 
         // Check if 'to' node exists, if not, add it
         if (nodes.find(to) == nodes.end()) {
-            addNode(to);
+            addNode(to, true);
+        }else{
+            if (!nodes[to].isForeign){
+                throw std::runtime_error("Node already exists with different isForeign value..");
+            }
         }
 
         // Now add the edge since both nodes exist
@@ -167,6 +173,14 @@ class CAG {
                     nodes[neighbor].neighbors.erase(v);
                     nodes[neighbor].neighbors.insert(u);
                 }
+            }
+            nodes[u].neighbors.erase(v);
+
+            // Update union-find only if v is in value set (not key set)
+            if (values_in_union_find.find(v) != values_in_union_find.end()) {
+                union_find[v] = u;
+                union_find[u] = u;
+                values_in_union_find.insert(u);
             }
 
             // Remove v from the graph
@@ -262,7 +276,6 @@ public:
     std::vector<std::vector<int>> adjList;
     std::unordered_map<int, std::vector<int>> foreign_to_local_edges;
     std::unordered_map<int, std::vector<int>> local_to_foreign_nodes;
-
 
 
     /*default constructor*/
@@ -604,6 +617,20 @@ int main(int argc, char** argv) {
             g.addEdge(136, 137);
         }
         
+        /* Graph g(12);
+        {
+            g.addEdge(0,1);
+            g.addEdge(1,2);
+            g.addEdge(3,4);
+            g.addEdge(5,6);
+            g.addEdge(7,8);
+            g.addEdge(0,9);
+            g.addEdge(9,10);
+            g.addEdge(10,11);
+            g.addEdge(2,11);
+
+        } */
+
         int verticesPerProcess = g.vertexCount / mpi_size;
         if (verticesPerProcess == 0)
         {
@@ -632,11 +659,6 @@ int main(int argc, char** argv) {
         local_list.push_back(node.first);
         local_list.push_back(labels[node.first-g_sub.startVertexIndex]);
     }
-    if (mpi_rank == 0){
-        for (int i = 0; i < local_list.size(); ++i) {
-        std::cout << local_list[i] << " ";}
-        std::cout << std::endl;
-    }
 
     //exchange borders with all other processes
     // Step 1: Gather sizes of each list
@@ -662,21 +684,18 @@ int main(int argc, char** argv) {
 
 
     std::unordered_map<int, int> foreign_ID_to_label;
-    for (int i = 0; i < total_size; i += 2) {
+    for (int i = 0; i < total_size; i += 2) { // TODO can optimize out own local nodes
         foreign_ID_to_label[gathered_list[i]] = gathered_list[i + 1];
     }
 
     CAG cag = g_sub.createCAG(labels, foreign_ID_to_label);
-
-
-    if (mpi_rank == 0){
-        for (int i = 0; i < gathered_list.size(); ++i) {
-        std::cout << gathered_list[i] << " ";
+    
+    
+    //cag.union_find[]
+    for (int label : labels) {
+        cag.union_find[label] = label;
+        cag.values_in_union_find.insert(label);
     }
-
-    std::cout << std::endl;
-    }
-
 
 
     // calculating reduction tree
@@ -711,7 +730,7 @@ int main(int argc, char** argv) {
             const CAG::Node& new_cag_node = nodePair.second;
 
             // Add node
-            if (cag.doesNodeExist(new_cag_node.id)) {
+            if (!cag.doesNodeExist(new_cag_node.id)) {
                 // node did not exist in previous cag
                 cag.addNode(new_cag_node.id, new_cag_node.isForeign);
             }else{
@@ -728,7 +747,7 @@ int main(int argc, char** argv) {
                     // node was local in previous cag
                     if (!new_cag_node.isForeign){
                         // something went wrong
-                        throw std::runtime_error("Node already exists with different isForeign value");
+                        throw std::runtime_error("Node already exists with different isForeign value...");
                     }else{
                         // do nothing
                     }
@@ -742,9 +761,23 @@ int main(int argc, char** argv) {
     }
 
 
-    cag.displayGraph();
+    for (int i = 0; i < labels.size(); ++i) {
+        int label = labels[i];
+        bool had_to_do_it = false;
+        while (label != cag.union_find[label]) {
+            label = cag.union_find[label];
+            had_to_do_it = true;
+        }
+        if (had_to_do_it){
+            cag.union_find[labels[i]] = label;
+        }
 
+        labels[i] = label;
+    }
 
+    for (int i = g_sub.startVertexIndex; i < g_sub.startVertexIndex+g_sub.vertexCount; ++i) {
+        std::cout << i << " belongs to label " << labels[i-g_sub.startVertexIndex] << std::endl;
+    }
 
 
     MPI_Finalize();
