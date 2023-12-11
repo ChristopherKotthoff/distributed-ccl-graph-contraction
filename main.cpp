@@ -9,7 +9,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#define DEBUG_CONDITION true
+#define DEBUG_CONDITION false
+#define RANK_OF_INTEREST 1
 
 /// @brief
 
@@ -61,6 +62,9 @@ class CAG {
         nodes.clear();
 
         size_t i = 0;
+
+        std::vector<int> temp;
+
         while (i < data.size() && data[i] != -1) {
             // Deserialize node ID
             int nodeId = data[i++];
@@ -77,8 +81,13 @@ class CAG {
             // Deserialize and add each neighbor
             for (int j = 0; j < numNeighbors; ++j) {
                 int neighborId = data[i++];
-                addEdge(nodeId, neighborId);
+                temp.push_back(nodeId);
+                temp.push_back(neighborId);
             }
+        }
+
+        for (size_t i = 0; i < temp.size(); i += 2) {
+            addEdge(temp[i], temp[i + 1]);
         }
     }
 
@@ -163,28 +172,68 @@ class CAG {
         nodes[to].neighbors.erase(from);
     }
 
+    int find(int x) {
+        if (union_find.find(x) == union_find.end()) {
+            return x;
+        }
+
+        while (union_find[x] != x) {
+            x = union_find[x];
+        }
+        return x;
+    }
+
     // Contract an edge between two nodes
     void contractEdge(int u, int v) {
-        if (nodes.find(u) != nodes.end() && nodes.find(v) != nodes.end()) {
+        int smaller = -1;
+        int larger = -1;
+        if (u < v) {
+            smaller = u;
+            larger = v;
+        }else if (v < u) {
+            smaller = v;
+            larger = u;
+        }else{
+            throw std::runtime_error("Cannot contract an edge between a node and itself");
+        }
+
+        if (nodes.find(smaller) != nodes.end() && nodes.find(larger) != nodes.end()) {
             // Merge v's neighbors into u
-            for (auto neighbor : nodes[v].neighbors) {
-                if (neighbor != u) { // Avoid self-loop
-                    nodes[u].neighbors.insert(neighbor);
-                    nodes[neighbor].neighbors.erase(v);
-                    nodes[neighbor].neighbors.insert(u);
+            for (auto neighbor : nodes[larger].neighbors) {
+                if (neighbor != smaller) { // Avoid self-loop
+                    nodes[smaller].neighbors.insert(neighbor);
+                    nodes[neighbor].neighbors.erase(larger);
+                    nodes[neighbor].neighbors.insert(smaller);
                 }
             }
-            nodes[u].neighbors.erase(v);
+            nodes[smaller].neighbors.erase(larger);
 
             // Update union-find only if v is in value set (not key set)
-            if (values_in_union_find.find(v) != values_in_union_find.end()) {
-                union_find[v] = u;
-                union_find[u] = u;
-                values_in_union_find.insert(u);
-            }
+            //if (values_in_union_find.find(larger) != values_in_union_find.end()) {
+                /* union_find[larger] = smaller;
+                union_find[smaller] = smaller;
+                values_in_union_find.insert(smaller); */
+
+                // or maybe instead
+                int current = larger;
+                if (union_find.find(current) != union_find.end())
+                    while (union_find[current] != current) {
+                        int next = union_find[current];
+                        union_find[current] = smaller;
+                        current = next;
+                    }
+
+                union_find[current] = smaller;
+                union_find[smaller] = smaller;
+                values_in_union_find.insert(smaller);
+
+
+            //}
 
             // Remove v from the graph
-            nodes.erase(v);
+            nodes.erase(larger);
+        }else{
+            throw std::runtime_error("One or both nodes do not exist");
         }
     }
 
@@ -206,7 +255,7 @@ class CAG {
 
         // Step 2: Contract edges
         for (const auto& edge : edgesToContract) {
-            contractEdge(edge.first, edge.second);
+            contractEdge(find(edge.first), find(edge.second));
         }
     }
 
@@ -467,22 +516,24 @@ public:
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
 
-    int xx = 1;
-    while (xx == 0)
-    {
-        sleep(5);
-    }
+
 
     int mpi_rank;
     int mpi_size;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
 
+    int xx = 0;
+    while (DEBUG_CONDITION && xx == 0 && mpi_rank == RANK_OF_INTEREST)
+    {
+        sleep(5);
+    }
+
     Graph g_sub;
 
     if (mpi_rank == 0)
     {
-        Graph g(138);
+        /* Graph g(138);
         {
             g.addEdge(0, 1);
             g.addEdge(1, 2);
@@ -512,15 +563,15 @@ int main(int argc, char** argv) {
             g.addEdge(26, 27);
             g.addEdge(27, 28);
             g.addEdge(28, 29);
-            g.addEdge(29, 30);
+             g.addEdge(29, 30);
             g.addEdge(30, 31);
             g.addEdge(31, 32);
             g.addEdge(32, 33);
             g.addEdge(33, 34);
             g.addEdge(33, 79);
             g.addEdge(34, 35);
-            g.addEdge(35, 115);
-            g.addEdge(36, 37);
+             g.addEdge(35, 115);
+             g.addEdge(36, 37);
             g.addEdge(37, 38);
             g.addEdge(38, 39);
             g.addEdge(39, 40);
@@ -616,7 +667,7 @@ int main(int argc, char** argv) {
             g.addEdge(135, 136);
             g.addEdge(136, 137);
         }
-        
+         */
         /* Graph g(12);
         {
             g.addEdge(0,1);
@@ -630,6 +681,45 @@ int main(int argc, char** argv) {
             g.addEdge(2,11);
 
         } */
+
+
+/* Graph g(12);
+    {
+        g.addEdge(9,10);
+        g.addEdge(2,4);
+        g.addEdge(3,8);
+        g.addEdge(10,11);
+        g.addEdge(6,11);
+        g.addEdge(7,10);
+        g.addEdge(1,9);
+        g.addEdge(0,3);
+        g.addEdge(8,10);
+        g.addEdge(11,3);
+        g.addEdge(3,10);
+        g.addEdge(5,6);
+        g.addEdge(6,10);
+        g.addEdge(4,7);
+        g.addEdge(2,8);
+    } */
+ /*    Graph g(6);
+    {
+        g.addEdge(0,3);
+        g.addEdge(3,1);
+        g.addEdge(1,4);
+        g.addEdge(4,2);
+        g.addEdge(2,5);
+    }
+ */
+Graph g(8);
+    {
+        g.addEdge(0,1);
+        g.addEdge(1,2);
+        g.addEdge(2,3);
+        g.addEdge(3,4);
+        g.addEdge(4,5);
+        g.addEdge(5,6);
+        g.addEdge(6,7);
+    }
 
         int verticesPerProcess = g.vertexCount / mpi_size;
         if (verticesPerProcess == 0)
@@ -691,7 +781,6 @@ int main(int argc, char** argv) {
     CAG cag = g_sub.createCAG(labels, foreign_ID_to_label);
     
     
-    //cag.union_find[]
     for (int label : labels) {
         cag.union_find[label] = label;
         cag.values_in_union_find.insert(label);
@@ -725,6 +814,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < partners_size; ++i) {
         CAG received_cag = cag.sendAndReceive(partners[i]);
 
+
         // merge received_cag into cag
         for (const auto& nodePair : received_cag.nodes) {
             const CAG::Node& new_cag_node = nodePair.second;
@@ -733,6 +823,7 @@ int main(int argc, char** argv) {
             if (!cag.doesNodeExist(new_cag_node.id)) {
                 // node did not exist in previous cag
                 cag.addNode(new_cag_node.id, new_cag_node.isForeign);
+                //cag.union_find[new_cag_node.id] = new_cag_node.id;
             }else{
                 // node already existed in previous cag
                 if (cag.isNodeForeign(new_cag_node.id)){
@@ -740,6 +831,7 @@ int main(int argc, char** argv) {
                     if (!new_cag_node.isForeign){
                         // node is now local in current cag
                         cag.makeNodeLocal(new_cag_node.id);
+                        //cag.union_find[new_cag_node.id] = new_cag_node.id;
                     }else{
                         // node is still foreign in current cag
                     }
@@ -753,6 +845,10 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+
+            for (int neighbor : new_cag_node.neighbors) {
+                cag.nodes[new_cag_node.id].neighbors.insert(neighbor);
+            }
         }
 
         // merge all local-local edges in the CAG of the variable cag
@@ -761,7 +857,7 @@ int main(int argc, char** argv) {
     }
 
 
-    for (int i = 0; i < labels.size(); ++i) {
+    for (size_t i = 0; i < labels.size(); ++i) {
         int label = labels[i];
         bool had_to_do_it = false;
         while (label != cag.union_find[label]) {
@@ -778,6 +874,14 @@ int main(int argc, char** argv) {
     for (int i = g_sub.startVertexIndex; i < g_sub.startVertexIndex+g_sub.vertexCount; ++i) {
         std::cout << i << " belongs to label " << labels[i-g_sub.startVertexIndex] << std::endl;
     }
+
+
+            while (DEBUG_CONDITION && mpi_rank != RANK_OF_INTEREST)
+            {
+                sleep(5);
+            }
+
+
 
 
     MPI_Finalize();
