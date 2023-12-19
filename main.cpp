@@ -8,9 +8,12 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <random>
+#include <H5Cpp.h>
 
 #define DEBUG_CONDITION false
-#define RANK_OF_INTEREST 1
+#define RANK_OF_INTEREST 0
+#define DO_SANITY_CHECK false
 
 /// @brief
 
@@ -21,19 +24,25 @@ public:
     {
         int id;
         bool isForeign;
-        std::unordered_set<int> neighbors;   // Using unordered_set to avoid duplicates
-        Node() : id(-1), isForeign(false) {} // Default constructor
-        Node(int _id, bool _isForeign) : id(_id), isForeign(_isForeign) {}
+        std::unordered_set<int> neighbors; // Using unordered_set to avoid duplicates
+        bool is_next_to_foreign;
+        Node() : id(-1), isForeign(false), is_next_to_foreign(false) {} // Default constructor
+        Node(int _id, bool _isForeign) : id(_id), isForeign(_isForeign), is_next_to_foreign(false) {}
     };
 
     std::unordered_map<int, Node> nodes;
     std::unordered_map<int, int> union_find;
     std::unordered_set<int> values_in_union_find;
+    int local_information_id_min;
+    int local_information_id_max;
 
     // Method to serialize the nodes into a vector
     std::vector<int> serialize() const
     {
         std::vector<int> data;
+
+        data.push_back(local_information_id_min);
+        data.push_back(local_information_id_max);
 
         // Serialize each node
         for (const auto &nodePair : nodes)
@@ -68,6 +77,8 @@ public:
         nodes.clear();
 
         size_t i = 0;
+        local_information_id_min = data[i++];
+        local_information_id_max = data[i++];
 
         std::vector<int> temp;
 
@@ -224,61 +235,45 @@ public:
     // Contract an edge between two nodes
     void contractEdge(int u, int v)
     {
-        int smaller = -1;
-        int larger = -1;
-        if (u < v)
-        {
-            smaller = u;
-            larger = v;
-        }
-        else if (v < u)
-        {
-            smaller = v;
-            larger = u;
-        }
-        else
-        {
-            throw std::runtime_error("Cannot contract an edge between a node and itself");
-        }
 
-        if (nodes.find(smaller) != nodes.end() && nodes.find(larger) != nodes.end())
+        if (nodes.find(u) != nodes.end() && nodes.find(v) != nodes.end())
         {
             // Merge v's neighbors into u
-            for (auto neighbor : nodes[larger].neighbors)
+            for (auto neighbor : nodes[v].neighbors)
             {
-                if (neighbor != smaller)
+                if (neighbor != u)
                 { // Avoid self-loop
-                    nodes[smaller].neighbors.insert(neighbor);
-                    nodes[neighbor].neighbors.erase(larger);
-                    nodes[neighbor].neighbors.insert(smaller);
+                    nodes[u].neighbors.insert(neighbor);
+                    nodes[neighbor].neighbors.erase(v);
+                    nodes[neighbor].neighbors.insert(u);
                 }
             }
-            nodes[smaller].neighbors.erase(larger);
+            nodes[u].neighbors.erase(v);
 
             // Update union-find only if v is in value set (not key set)
-            // if (values_in_union_find.find(larger) != values_in_union_find.end()) {
-            /* union_find[larger] = smaller;
-            union_find[smaller] = smaller;
-            values_in_union_find.insert(smaller); */
+            // if (values_in_union_find.find(v) != values_in_union_find.end()) {
+            /* union_find[v] = u;
+            union_find[u] = u;
+            values_in_union_find.insert(u); */
 
             // or maybe instead
-            int current = larger;
+            int current = v;
             if (union_find.find(current) != union_find.end())
                 while (union_find[current] != current)
                 {
                     int next = union_find[current];
-                    union_find[current] = smaller;
+                    union_find[current] = u;
                     current = next;
                 }
 
-            union_find[current] = smaller;
-            union_find[smaller] = smaller;
-            values_in_union_find.insert(smaller);
+            union_find[current] = u;
+            union_find[u] = u;
+            values_in_union_find.insert(u);
 
             //}
 
             // Remove v from the graph
-            nodes.erase(larger);
+            nodes.erase(v);
         }
         else
         {
@@ -290,11 +285,20 @@ public:
     {
         std::vector<std::pair<int, int>> edgesToContract;
 
+        for (auto &nodePair : nodes)
+        {
+            nodePair.second.is_next_to_foreign = false;
+        }
+
         // Step 1: Collect edges to contract
         for (const auto &nodePair : nodes)
         {
             if (nodePair.second.isForeign)
             {
+                for (int neighbor : nodePair.second.neighbors)
+                {
+                    nodes[neighbor].is_next_to_foreign = true;
+                }
                 continue;
             }
             int u = nodePair.first;
@@ -310,7 +314,24 @@ public:
         // Step 2: Contract edges
         for (const auto &edge : edgesToContract)
         {
-            contractEdge(find(edge.first), find(edge.second));
+            int u = find(edge.first);
+            int v = find(edge.second);
+
+            int smaller = std::min(u, v);
+            int larger = std::max(u, v);
+
+            if (smaller == larger)
+            {
+                continue;
+                std::cout << "this case should not really happen anymore i think..." << std::endl;
+            }
+
+            if (nodes[larger].is_next_to_foreign)
+            {
+                continue;
+            }
+
+            contractEdge(smaller, larger);
         }
     }
 
@@ -452,6 +473,18 @@ public:
         }
     }
 
+    void printWithDashes()
+    {
+        for (int i = 0; i < vertexCount; ++i)
+        {
+            for (int w : adjList[i])
+            {
+                if (i + startVertexIndex <= w)
+                    std::cout << i + startVertexIndex << "-" << w << std::endl;
+            }
+        }
+    }
+
     /*vertices contain vertex ids (absolute). "from" and "to" are the ids of the specified range of vertices (including "to").*/
     void sendSubgraph(int dest, int from, int to, MPI_Comm comm)
     {
@@ -584,14 +617,108 @@ public:
     }
 };
 
-int main(int argc, char **argv)
+Graph generateRandomGraph(int num_nodes, int num_edges)
 {
-    MPI_Init(&argc, &argv);
+    Graph g(num_nodes);
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distrib(0, num_nodes - 1);
 
-    int mpi_rank;
-    int mpi_size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    for (int i = 0; i < num_edges; ++i)
+    {
+        int u = distrib(gen);
+        int v = distrib(gen);
+        if (u == v)
+        {
+            --i;
+            continue;
+        }
+        g.addEdge(u, v);
+    }
+
+    return g;
+}
+
+// Function to read the 'vertices' integer from an opened HDF5 file
+int readVerticesFromHDF5File(H5::H5File &file)
+{
+    // Open the dataset 'vertices'
+    H5::DataSet datasetVertices = file.openDataSet("vertices");
+
+    // Prepare a variable to store the vertices value
+    int vertices;
+    datasetVertices.read(&vertices, H5::PredType::NATIVE_INT);
+
+    return vertices;
+}
+
+std::vector<std::vector<int>> readLinesFromHDF5(H5::H5File &file, int startLine, int endLine)
+{
+    std::vector<std::vector<int>> lines;
+
+    H5::DataSet datasetLookup = file.openDataSet("lookup");
+    H5::DataSet datasetData = file.openDataSet("data");
+
+    H5::DataSpace dataspaceLookup = datasetLookup.getSpace();
+    H5::DataSpace dataspaceData = datasetData.getSpace();
+
+    // Read the lookup indices for the start and end lines
+    hsize_t count[2] = {static_cast<hsize_t>(endLine - startLine + 1), 2};
+    hsize_t offset[2] = {static_cast<hsize_t>(startLine), 0};
+    dataspaceLookup.selectHyperslab(H5S_SELECT_SET, count, offset);
+    hsize_t dimLookupRead[2] = {count[0], 2};
+    H5::DataSpace memspaceLookup(2, dimLookupRead);
+
+    std::vector<int> lookup(count[0] * 2); // Buffer for lookup indices
+    datasetLookup.read(lookup.data(), H5::PredType::NATIVE_INT, memspaceLookup, dataspaceLookup);
+
+    int startIdx = lookup[0];
+    int endIdx = lookup[(endLine - startLine) * 2 + 1]; // End index of endLine
+
+    // Read the data chunk
+    hsize_t dataSize = static_cast<hsize_t>(endIdx - startIdx + 1);
+    hsize_t dataOffset[1] = {static_cast<hsize_t>(startIdx)};
+    dataspaceData.selectHyperslab(H5S_SELECT_SET, &dataSize, dataOffset);
+    std::vector<int> chunk(dataSize);
+    H5::DataSpace memspaceData(1, &dataSize);
+    datasetData.read(chunk.data(), H5::PredType::NATIVE_INT, memspaceData, dataspaceData);
+
+    // Process the data chunk
+    std::vector<int> line;
+    int should_be = startLine;
+    bool first_number_in_line = true;
+    for (int num : chunk)
+    {
+        if (num == -1)
+        {
+            lines.push_back(line);
+            line.clear();
+            should_be++;
+            first_number_in_line = true;
+        }
+        else
+        {
+            if (first_number_in_line)
+            {
+                first_number_in_line = false;
+                if (num != should_be)
+                {
+                    std::cout << "Error: " << num << " should be " << should_be << std::endl;
+                    throw std::runtime_error("Error: file vertice at line " + std::to_string(num) + " should be " + std::to_string(should_be));
+                }
+            }
+            else
+            {
+                line.push_back(num);
+            }
+        }
+    }
+
+    return lines;
+}
+
+int run(int mpi_rank, int mpi_size)
+{
 
     int xx = 0;
     while (DEBUG_CONDITION && xx == 0 && mpi_rank == RANK_OF_INTEREST)
@@ -599,217 +726,36 @@ int main(int argc, char **argv)
         sleep(5);
     }
 
-    Graph g_sub;
+    H5::H5File file("data/coauth-DBLP-full-proj-graph-LIST_REMAP.h5", H5F_ACC_RDONLY);
+    int total_vertices = readVerticesFromHDF5File(file);
 
-    if (mpi_rank == 0)
+    int verticesPerProcess = total_vertices / mpi_size;
+    if (verticesPerProcess == 0)
     {
-        /* Graph g(138);
-        {
-            g.addEdge(0, 1);
-            g.addEdge(1, 2);
-            g.addEdge(2, 3);
-            g.addEdge(3, 4);
-            g.addEdge(4, 5);
-            g.addEdge(5, 6);
-            g.addEdge(6, 7);
-            g.addEdge(7, 8);
-            g.addEdge(8, 9);
-            g.addEdge(9, 10);
-            g.addEdge(10, 11);
-            g.addEdge(12, 13);
-            g.addEdge(13, 14);
-            g.addEdge(14, 15);
-            g.addEdge(15, 16);
-            g.addEdge(16, 17);
-            g.addEdge(17, 18);
-            g.addEdge(18, 19);
-            g.addEdge(19, 20);
-            g.addEdge(19, 59);
-            g.addEdge(20, 21);
-            g.addEdge(21, 22);
-            g.addEdge(22, 23);
-            g.addEdge(24, 25);
-            g.addEdge(25, 26);
-            g.addEdge(26, 27);
-            g.addEdge(27, 28);
-            g.addEdge(28, 29);
-             g.addEdge(29, 30);
-            g.addEdge(30, 31);
-            g.addEdge(31, 32);
-            g.addEdge(32, 33);
-            g.addEdge(33, 34);
-            g.addEdge(33, 79);
-            g.addEdge(34, 35);
-             g.addEdge(35, 115);
-             g.addEdge(36, 37);
-            g.addEdge(37, 38);
-            g.addEdge(38, 39);
-            g.addEdge(39, 40);
-            g.addEdge(40, 41);
-            g.addEdge(41, 42);
-            g.addEdge(42, 43);
-            g.addEdge(43, 44);
-            g.addEdge(44, 45);
-            g.addEdge(45, 46);
-            g.addEdge(46, 47);
-            g.addEdge(48, 49);
-            g.addEdge(49, 50);
-            g.addEdge(50, 51);
-            g.addEdge(51, 52);
-            g.addEdge(52, 53);
-            g.addEdge(53, 54);
-            g.addEdge(54, 55);
-            g.addEdge(55, 56);
-            g.addEdge(56, 57);
-            g.addEdge(57, 58);
-            g.addEdge(58, 59);
-            g.addEdge(60, 61);
-            g.addEdge(61, 62);
-            g.addEdge(62, 63);
-            g.addEdge(63, 64);
-            g.addEdge(64, 65);
-            g.addEdge(65, 66);
-            g.addEdge(66, 67);
-            g.addEdge(67, 68);
-            g.addEdge(67, 76);
-            g.addEdge(68, 69);
-            g.addEdge(69, 70);
-            g.addEdge(70, 71);
-            g.addEdge(72, 73);
-            g.addEdge(73, 74);
-            g.addEdge(74, 75);
-            g.addEdge(75, 76);
-            g.addEdge(76, 77);
-            g.addEdge(77, 78);
-            g.addEdge(78, 79);
-            g.addEdge(79, 80);
-            g.addEdge(80, 81);
-            g.addEdge(81, 82);
-            g.addEdge(83, 84);
-            g.addEdge(84, 85);
-            g.addEdge(85, 86);
-            g.addEdge(86, 87);
-            g.addEdge(87, 88);
-            g.addEdge(88, 89);
-            g.addEdge(89, 90);
-            g.addEdge(90, 91);
-            g.addEdge(91, 92);
-            g.addEdge(92, 93);
-            g.addEdge(94, 95);
-            g.addEdge(95, 96);
-            g.addEdge(96, 97);
-            g.addEdge(97, 98);
-            g.addEdge(98, 99);
-            g.addEdge(99, 100);
-            g.addEdge(100, 101);
-            g.addEdge(101, 102);
-            g.addEdge(102, 103);
-            g.addEdge(103, 104);
-            g.addEdge(105, 106);
-            g.addEdge(106, 107);
-            g.addEdge(107, 108);
-            g.addEdge(108, 109);
-            g.addEdge(109, 110);
-            g.addEdge(110, 111);
-            g.addEdge(111, 112);
-            g.addEdge(112, 113);
-            g.addEdge(113, 114);
-            g.addEdge(114, 115);
-            g.addEdge(116, 117);
-            g.addEdge(116, 121);
-            g.addEdge(117, 118);
-            g.addEdge(118, 119);
-            g.addEdge(119, 120);
-            g.addEdge(120, 121);
-            g.addEdge(121, 122);
-            g.addEdge(122, 123);
-            g.addEdge(123, 124);
-            g.addEdge(124, 125);
-            g.addEdge(125, 126);
-            g.addEdge(127, 128);
-            g.addEdge(128, 129);
-            g.addEdge(129, 130);
-            g.addEdge(130, 131);
-            g.addEdge(131, 132);
-            g.addEdge(132, 133);
-            g.addEdge(133, 134);
-            g.addEdge(134, 135);
-            g.addEdge(135, 136);
-            g.addEdge(136, 137);
-        }
-         */
-        /* Graph g(12);
-        {
-            g.addEdge(0,1);
-            g.addEdge(1,2);
-            g.addEdge(3,4);
-            g.addEdge(5,6);
-            g.addEdge(7,8);
-            g.addEdge(0,9);
-            g.addEdge(9,10);
-            g.addEdge(10,11);
-            g.addEdge(2,11);
-
-        } */
-
-        /* Graph g(12);
-            {
-                g.addEdge(9,10);
-                g.addEdge(2,4);
-                g.addEdge(3,8);
-                g.addEdge(10,11);
-                g.addEdge(6,11);
-                g.addEdge(7,10);
-                g.addEdge(1,9);
-                g.addEdge(0,3);
-                g.addEdge(8,10);
-                g.addEdge(11,3);
-                g.addEdge(3,10);
-                g.addEdge(5,6);
-                g.addEdge(6,10);
-                g.addEdge(4,7);
-                g.addEdge(2,8);
-            } */
-        /*    Graph g(6);
-           {
-               g.addEdge(0,3);
-               g.addEdge(3,1);
-               g.addEdge(1,4);
-               g.addEdge(4,2);
-               g.addEdge(2,5);
-           }
-        */
-        Graph g(8);
-        {
-            g.addEdge(0, 1);
-            g.addEdge(1, 2);
-            g.addEdge(2, 3);
-            g.addEdge(3, 4);
-            g.addEdge(4, 5);
-            g.addEdge(5, 6);
-            g.addEdge(6, 7);
-        }
-
-        int verticesPerProcess = g.vertexCount / mpi_size;
-        if (verticesPerProcess == 0)
-        {
-            throw std::runtime_error("Too many processes");
-        }
-
-        for (int receiver = 1; receiver < mpi_size - 1; ++receiver)
-        {
-            g.sendSubgraph(receiver, verticesPerProcess * receiver, verticesPerProcess * (receiver + 1) - 1, MPI_COMM_WORLD);
-        }
-        g.sendSubgraph(mpi_size - 1, verticesPerProcess * (mpi_size - 1), g.vertexCount - 1, MPI_COMM_WORLD);
-
-        g_sub = g.createSubgraph(0, verticesPerProcess - 1);
-    }
-    else
-    {
-        g_sub = Graph::receiveSubgraph(0, MPI_COMM_WORLD);
+        throw std::runtime_error("Too many processes for amount of nodes");
     }
 
-    sleep(mpi_rank);
+    int my_start_vertex_id = -1;
+    int my_end_vertex_id = -1;
+    if (mpi_rank == mpi_size - 1)
+    {
+        my_start_vertex_id = verticesPerProcess * mpi_rank;
+        my_end_vertex_id = total_vertices - 1;
+    }else{
+        my_start_vertex_id = verticesPerProcess * mpi_rank;
+        my_end_vertex_id = verticesPerProcess * (mpi_rank + 1) - 1;
+    }
+
+    Graph g_sub = Graph(my_end_vertex_id-my_start_vertex_id+1, my_start_vertex_id);
+    std::vector<std::vector<int>> lines = readLinesFromHDF5(file, my_start_vertex_id, my_end_vertex_id);
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        for (int neighbor : lines[i])
+        {
+            g_sub.addDirectedEdge(i + my_start_vertex_id, neighbor);
+        }
+    }
+
     std::vector<int> labels = g_sub.connectedComponents();
 
     std::vector<int> local_list; // contains the following information: [localnode, cc_id, localnode, cc_id, ...]
@@ -849,6 +795,9 @@ int main(int argc, char **argv)
     }
 
     CAG cag = g_sub.createCAG(labels, foreign_ID_to_label);
+
+    cag.local_information_id_min = g_sub.startVertexIndex;
+    cag.local_information_id_max = g_sub.startVertexIndex + g_sub.vertexCount - 1;
 
     for (int label : labels)
     {
@@ -890,28 +839,34 @@ int main(int argc, char **argv)
         {
             const CAG::Node &new_cag_node = nodePair.second;
 
+            int union_find_node_id = cag.find(new_cag_node.id);
+
             // Add node
-            if (!cag.doesNodeExist(new_cag_node.id))
+            if (!cag.doesNodeExist(union_find_node_id))
             {
                 // node did not exist in previous cag
+                assert(union_find_node_id == new_cag_node.id);
                 cag.addNode(new_cag_node.id, new_cag_node.isForeign);
                 // cag.union_find[new_cag_node.id] = new_cag_node.id;
             }
             else
             {
                 // node already existed in previous cag
-                if (cag.isNodeForeign(new_cag_node.id))
+                if (cag.isNodeForeign(union_find_node_id))
                 {
                     // node was foreign in previous cag
                     if (!new_cag_node.isForeign)
                     {
                         // node is now local in current cag
                         cag.makeNodeLocal(new_cag_node.id);
+                        assert(union_find_node_id == new_cag_node.id);
                         // cag.union_find[new_cag_node.id] = new_cag_node.id;
                     }
                     else
                     {
                         // node is still foreign in current cag
+                        assert(cag.union_find.find(new_cag_node.id) == cag.union_find.end());
+                        assert(union_find_node_id == new_cag_node.id);
                     }
                 }
                 else
@@ -931,12 +886,33 @@ int main(int argc, char **argv)
 
             for (int neighbor : new_cag_node.neighbors)
             {
-                cag.nodes[new_cag_node.id].neighbors.insert(neighbor);
+                cag.nodes[union_find_node_id].neighbors.insert(cag.find(neighbor));
             }
+        }
+
+        std::vector<int> to_remove;
+        for (const auto &nodePair : cag.nodes)
+        {
+            if (nodePair.first >= received_cag.local_information_id_min && nodePair.first <= received_cag.local_information_id_max && nodePair.second.isForeign)
+            {
+                to_remove.push_back(nodePair.first);
+                for (int neighbor : nodePair.second.neighbors)
+                {
+                    cag.nodes[neighbor].neighbors.erase(nodePair.first);
+                }
+            }
+        }
+        for (int node_id : to_remove)
+        {
+            cag.nodes.erase(node_id);
         }
 
         // merge all local-local edges in the CAG of the variable cag
         cag.contractLocalToLocalEdges();
+
+        assert((cag.local_information_id_max == received_cag.local_information_id_min - 1) || (cag.local_information_id_min == received_cag.local_information_id_max + 1));
+        cag.local_information_id_min = std::min(cag.local_information_id_min, received_cag.local_information_id_min);
+        cag.local_information_id_max = std::max(cag.local_information_id_max, received_cag.local_information_id_max);
     }
 
     for (size_t i = 0; i < labels.size(); ++i)
@@ -956,15 +932,32 @@ int main(int argc, char **argv)
         labels[i] = label;
     }
 
-    for (int i = g_sub.startVertexIndex; i < g_sub.startVertexIndex + g_sub.vertexCount; ++i)
-    {
-        std::cout << i << " belongs to label " << labels[i - g_sub.startVertexIndex] << std::endl;
-    }
+    return 0;
+}
 
-    while (DEBUG_CONDITION && mpi_rank != RANK_OF_INTEREST)
+int main(int argc, char **argv)
+{
+    MPI_Init(&argc, &argv);
+
+    int mpi_rank;
+    int mpi_size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    int status;
+    double commulative_time = 0;
+    int runs = 0;
+    do
     {
-        sleep(5);
-    }
+        runs++;
+        double start_time = MPI_Wtime();
+        status = run(mpi_rank, mpi_size);
+        double end_time = MPI_Wtime();
+        commulative_time += end_time - start_time;
+        if (mpi_rank == 0)
+        {
+            std::cout << "time taken: " << end_time - start_time << ", average time: " << commulative_time / runs << std::endl;
+        }
+    } while (false);
 
     MPI_Finalize();
     return 0;
