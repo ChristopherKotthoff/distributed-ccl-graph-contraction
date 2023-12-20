@@ -25,7 +25,7 @@ def create_hdf5_with_lookup(input_file, output_file):
         h5file.create_dataset('vertices', data=lookup_array.shape[0])
 
 # Example usage
-#create_hdf5_with_lookup('coauth-DBLP-full-proj-graph-LIST_REMAP.txt', 'coauth-DBLP-full-proj-graph-LIST_REMAP.h5')
+create_hdf5_with_lookup('coauth-DBLP-full-proj-graph-LIST_REMAP.txt', 'coauth-DBLP-full-proj-graph-LIST_REMAP.h5')
 
 
 def read_lines_from_hdf5(file_name, start_line, end_line):
@@ -51,6 +51,6 @@ def read_lines_from_hdf5(file_name, start_line, end_line):
         return lines
 
 # Usage
-lines = read_lines_from_hdf5('coauth-DBLP-full-proj-graph-LIST_REMAP.h5', 9, 18)
+lines = read_lines_from_hdf5('coauth-DBLP-full-proj-graph-LIST_REMAP.h5', 0, 11)
 print(lines)
 

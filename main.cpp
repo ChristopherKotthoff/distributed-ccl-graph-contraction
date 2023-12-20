@@ -10,10 +10,11 @@
 #include <unordered_set>
 #include <random>
 #include <H5Cpp.h>
+#include <stack>
 
 #define DEBUG_CONDITION false
 #define RANK_OF_INTEREST 0
-#define DO_SANITY_CHECK false
+#define COUNT_CC true
 
 /// @brief
 
@@ -383,20 +384,31 @@ class Graph
 private:
     void DFS(int v, std::vector<bool> &visited, int label, std::vector<int> &components)
     {
-        visited[v - startVertexIndex] = true;
-        components[v - startVertexIndex] = label;
+        std::stack<int> stack;
+        stack.push(v);
 
-        // Recur for all the vertices adjacent to this vertex
-        for (int i : (this->operator[](v)))
+        while (!stack.empty())
         {
-            if (i >= startVertexIndex && i < startVertexIndex + vertexCount && !visited[i - startVertexIndex])
+            v = stack.top();
+            stack.pop();
+
+            if (!visited[v - startVertexIndex])
             {
-                DFS(i, visited, label, components);
-            }
-            else if (i < startVertexIndex || i >= startVertexIndex + vertexCount)
-            {
-                foreign_to_local_edges[i].push_back(v);
-                local_to_foreign_nodes[v].push_back(i);
+                visited[v - startVertexIndex] = true;
+                components[v - startVertexIndex] = label;
+
+                for (int i : (this->operator[](v)))
+                {
+                    if (i >= startVertexIndex && i < startVertexIndex + vertexCount && !visited[i - startVertexIndex])
+                    {
+                        stack.push(i);
+                    }
+                    else if (i < startVertexIndex || i >= startVertexIndex + vertexCount)
+                    {
+                        foreign_to_local_edges[i].push_back(v);
+                        local_to_foreign_nodes[v].push_back(i);
+                    }
+                }
             }
         }
     }
@@ -721,7 +733,7 @@ int run(int mpi_rank, int mpi_size)
 {
 
     int xx = 0;
-    while (DEBUG_CONDITION && xx == 0 && mpi_rank == RANK_OF_INTEREST)
+    while (DEBUG_CONDITION && xx == 0 /*  && mpi_rank == RANK_OF_INTEREST */)
     {
         sleep(5);
     }
@@ -741,12 +753,14 @@ int run(int mpi_rank, int mpi_size)
     {
         my_start_vertex_id = verticesPerProcess * mpi_rank;
         my_end_vertex_id = total_vertices - 1;
-    }else{
+    }
+    else
+    {
         my_start_vertex_id = verticesPerProcess * mpi_rank;
         my_end_vertex_id = verticesPerProcess * (mpi_rank + 1) - 1;
     }
 
-    Graph g_sub = Graph(my_end_vertex_id-my_start_vertex_id+1, my_start_vertex_id);
+    Graph g_sub = Graph(my_end_vertex_id - my_start_vertex_id + 1, my_start_vertex_id);
     std::vector<std::vector<int>> lines = readLinesFromHDF5(file, my_start_vertex_id, my_end_vertex_id);
     for (size_t i = 0; i < lines.size(); ++i)
     {
@@ -932,6 +946,38 @@ int run(int mpi_rank, int mpi_size)
         labels[i] = label;
     }
 
+    if (COUNT_CC)
+    {
+        std::unordered_set<int> unique_labels(labels.begin(), labels.end());
+        // send labels to rank 0
+        if (mpi_rank != 0)
+        {
+            std::vector<int> labels_to_send;
+            for (int label : unique_labels)
+            {
+                labels_to_send.push_back(label);
+            }
+            int labels_to_send_size = labels_to_send.size();
+            MPI_Send(&labels_to_send_size, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+            MPI_Send(labels_to_send.data(), labels_to_send_size, MPI_INT, 0, 0, MPI_COMM_WORLD);
+        }
+        else
+        {
+            for (int i = 1; i < mpi_size; ++i)
+            {
+                int labels_to_receive_size;
+                MPI_Recv(&labels_to_receive_size, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                std::vector<int> labels_to_receive(labels_to_receive_size);
+                MPI_Recv(labels_to_receive.data(), labels_to_receive_size, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                for (int label : labels_to_receive)
+                {
+                    unique_labels.insert(label);
+                }
+            }
+            std::cout << std::endl
+                      << "Number of connected components: " << unique_labels.size() << std::endl;
+        }
+    }
     return 0;
 }
 
@@ -950,12 +996,17 @@ int main(int argc, char **argv)
     {
         runs++;
         double start_time = MPI_Wtime();
+
         status = run(mpi_rank, mpi_size);
+
+        status = 1;
+
         double end_time = MPI_Wtime();
         commulative_time += end_time - start_time;
         if (mpi_rank == 0)
         {
-            std::cout << "time taken: " << end_time - start_time << ", average time: " << commulative_time / runs << std::endl;
+            std::cout << "time taken: " << end_time - start_time << ", average time: " << commulative_time / runs << std::endl
+                      << std::endl;
         }
     } while (false);
 
