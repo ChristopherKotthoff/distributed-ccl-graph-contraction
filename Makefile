@@ -1,5 +1,5 @@
 CC = mpic++
-CFLAGS  = -O0 -g -Wall -Wno-unused-variable -pedantic -std=c++11 -I/usr/include/hdf5/serial
+CFLAGS  = -O3 -g -Wall -Wno-unused-variable -pedantic -std=c++11 -I/usr/include/hdf5/serial
 DEBUGFLAGS = -v -fsanitize=address
 MPI_RANKS ?= 2  # Default to 2 ranks
 LATE_FLAGS =  -lhdf5_cpp -lhdf5

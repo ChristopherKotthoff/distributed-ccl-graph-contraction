@@ -1,4 +1,4 @@
-#define _GLIBCXX_DEBUG
+//#define _GLIBCXX_DEBUG
 #include <vector>
 #include <iostream>
 #include <mpi.h>
