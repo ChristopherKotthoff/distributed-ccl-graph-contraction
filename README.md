@@ -22,11 +22,10 @@ python convert_to_hdf5.py
 ```
 
 The file path to the HDF5 file is hardcoded in the C++ program, so you need to change it to the file you want to use.
+Place the data set "coauth-DBLP-full-proj-graph.txt" in the data folder and run the two scripts in case you don't want to change the hardcoded paths.
 
 # Do all of this in docker container
 
 Best, use VSCode with the Remote-Containers extension. It will automatically build the container and mount the project folder into the container. Press ctrl+shift+p and choose option "Dev Container: Reopen in Container".
-
-Place the data set "coauth-DBLP-full-proj-graph.txt" in the data folder and run the two scripts in case you don't to change the hardcoded paths.
 
 You can also call "make run MPI_RANKS=<some_number>" to run the program with a different number of MPI ranks. The default is 2. It needs to be a power of 2.
